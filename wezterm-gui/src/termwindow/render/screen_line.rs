@@ -41,6 +41,13 @@ impl crate::TermWindow {
 
         let num_cols = params.dims.cols;
 
+        // Glyph Protocol: registrations were snapshotted in LineRender
+        // *before* the render lock. We must NOT call pane.glyph_glossary()
+        // here: rendering runs inside with_lines_mut, which already holds the
+        // pane terminal lock, and re-locking it on the same thread deadlocks
+        // the first paint (parking_lot is not reentrant).
+        let glyph_glossary = params.glyph_glossary.as_ref();
+
         let hsv = if params.is_active {
             None
         } else {
@@ -510,6 +517,50 @@ impl crate::TermWindow {
                         }
                     }
 
+                    // Glyph Protocol: if this cell's codepoint is registered in
+                    // the pane glossary, override the font glyph with the
+                    // rasterized outline, falling back to a placeholder block
+                    // for undecodable payloads.
+                    let mut glyph_protocol_color = false;
+                    if let Some(glossary) = glyph_glossary {
+                        if let Some(ch) = info.only_char {
+                            if let Some(vg) = glossary.get(&(ch as u32)) {
+                                // Cell foreground in sRGB, baked into color
+                                // glyphs that use the 0xFFFF sentinel.
+                                let (r, g, b, a) = item.fg_color.srgba_pixel().as_rgba();
+                                let resolved = gl_state
+                                    .glyph_cache
+                                    .borrow_mut()
+                                    .cached_glyph_protocol(
+                                        ch as u32,
+                                        vg.version,
+                                        &vg.glyph,
+                                        [r, g, b, a],
+                                        &params.render_metrics,
+                                    )
+                                    .context("glyph protocol glyph")?;
+                                let sprite = match resolved {
+                                    Some((s, has_color)) => {
+                                        glyph_protocol_color = has_color;
+                                        s
+                                    }
+                                    // Undecodable payload: placeholder block.
+                                    None => gl_state
+                                        .glyph_cache
+                                        .borrow_mut()
+                                        .cached_block(
+                                            crate::customglyph::BlockKey::from_char('\u{2588}')
+                                                .expect("U+2588 FULL BLOCK is a block glyph"),
+                                            &params.render_metrics,
+                                        )
+                                        .context("glyph protocol placeholder")?,
+                                };
+                                texture.replace(sprite);
+                                top = 0.;
+                            }
+                        }
+                    }
+
                     if let Some(texture) = texture {
                         // TODO: clipping, but we can do that based on pixels
 
@@ -658,7 +709,7 @@ impl crate::TermWindow {
                             } else {
                                 hsv
                             });
-                            quad.set_has_color(glyph.has_color);
+                            quad.set_has_color(glyph.has_color || glyph_protocol_color);
                         }
                     }
                 }

@@ -334,6 +334,7 @@ impl crate::TermWindow {
                 filled_box: TextureRect,
                 window_is_transparent: bool,
                 layers: &'a mut TripleLayerQuadAllocator<'b>,
+                glyph_glossary: Option<wezterm_glyph_protocol::GlossarySnapshot>,
                 error: Option<anyhow::Error>,
             }
 
@@ -364,6 +365,18 @@ impl crate::TermWindow {
                 filled_box,
                 window_is_transparent,
                 layers,
+                // Snapshot the glyph-protocol glossary HERE, before
+                // with_lines_mut takes the pane terminal lock. Doing it during
+                // render would re-lock the same terminal and deadlock. Gated
+                // by config: when the protocol is off the renderer never
+                // consults the glossary.
+                glyph_glossary: if config.enable_glyph_protocol {
+                    pos.pane
+                        .glyph_glossary()
+                        .map(|g| g.lock().unwrap().snapshot())
+                } else {
+                    None
+                },
                 error: None,
             };
 
@@ -510,6 +523,7 @@ impl crate::TermWindow {
                                 cursor_fg: self.cursor_fg,
                                 cursor_bg: self.cursor_bg,
                                 cursor_is_default_color: self.cursor_is_default_color,
+                                glyph_glossary: self.glyph_glossary.clone(),
                                 white_space: self.white_space,
                                 filled_box: self.filled_box,
                                 window_is_transparent: self.window_is_transparent,

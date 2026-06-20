@@ -7130,6 +7130,7 @@ dependencies = [
  "wezterm-client",
  "wezterm-dynamic",
  "wezterm-font",
+ "wezterm-glyph-protocol",
  "wezterm-gui-subcommands",
  "wezterm-mux-server-impl",
  "wezterm-open-url",

@@ -77,6 +77,7 @@ impl crate::TermWindow {
                 cursor_border_color: LinearRgba::default(),
                 foreground: palette.foreground.to_linear(),
                 pane: None,
+                glyph_glossary: None,
                 is_active: true,
                 selection_fg: LinearRgba::default(),
                 selection_bg: LinearRgba::default(),

@@ -140,6 +140,11 @@ pub struct RenderScreenLineParams<'a> {
     pub config: &'a ConfigHandle,
     pub pane: Option<&'a Arc<dyn Pane>>,
 
+    /// This pane's glyph-protocol registrations, snapshotted before the
+    /// render lock (see LineRender) to avoid re-locking the pane terminal
+    /// during paint. `None` for surfaces without a glossary (e.g. tab bar).
+    pub glyph_glossary: Option<wezterm_glyph_protocol::GlossarySnapshot>,
+
     pub white_space: TextureRect,
     pub filled_box: TextureRect,
 

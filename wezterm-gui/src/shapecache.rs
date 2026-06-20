@@ -25,6 +25,10 @@ pub struct ShapedInfo {
     pub glyph: Rc<CachedGlyph>,
     pub pos: GlyphPosition,
     pub block_key: Option<BlockKey>,
+    /// The single source character for this cluster, if it maps to
+    /// exactly one. Used by the glyph-protocol render override to look
+    /// up per-pane registrations.
+    pub only_char: Option<char>,
 }
 
 impl ShapedInfo {
@@ -47,6 +51,7 @@ impl ShapedInfo {
                 },
                 glyph: Rc::clone(glyph),
                 block_key: info.only_char.and_then(BlockKey::from_char),
+                only_char: info.only_char,
             });
         }
         pos

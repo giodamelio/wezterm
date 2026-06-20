@@ -565,6 +565,15 @@ pub struct GlyphCache {
     frame_cache: HashMap<[u8; 32], Sprite>,
     line_glyphs: HashMap<LineKey, Sprite>,
     pub block_glyphs: HashMap<SizedBlockKey, Sprite>,
+    /// Glyph-protocol registered glyphs, rasterized to sprites and keyed by
+    /// (codepoint, version, cell metrics, foreground). The version
+    /// invalidates stale sprites when a codepoint is overwritten, evicted,
+    /// or cleared and re-registered. The foreground key is the cell fg for
+    /// glyphs that reference the `0xFFFF` sentinel and a constant otherwise,
+    /// so foreground-independent glyphs cache once across fg changes. The
+    /// bool is `has_color` (true for COLR glyphs, whose sprite carries its
+    /// own colors and is not fg-tinted).
+    glyph_protocol_glyphs: HashMap<(u32, u32, CellMetricKey, [u8; 4]), (Sprite, bool)>,
     pub cursor_glyphs: HashMap<(Option<CursorShape>, u8), Sprite>,
     pub color: HashMap<(RgbColor, NotNan<f32>), Sprite>,
     min_frame_duration: Duration,
@@ -588,6 +597,7 @@ impl GlyphCache {
             atlas,
             line_glyphs: HashMap::new(),
             block_glyphs: HashMap::new(),
+            glyph_protocol_glyphs: HashMap::new(),
             cursor_glyphs: HashMap::new(),
             color: HashMap::new(),
             min_frame_duration: Duration::from_millis(1000 / fonts.config().max_fps as u64),
@@ -617,6 +627,7 @@ impl GlyphCache {
             atlas,
             line_glyphs: HashMap::new(),
             block_glyphs: HashMap::new(),
+            glyph_protocol_glyphs: HashMap::new(),
             cursor_glyphs: HashMap::new(),
             color: HashMap::new(),
             min_frame_duration: Duration::from_millis(1000 / fonts.config().max_fps as u64),
@@ -1132,6 +1143,74 @@ impl GlyphCache {
         let sprite = self.atlas.allocate(&image)?;
         self.color.insert(key, sprite.clone());
         Ok(sprite)
+    }
+
+    /// Rasterize a glyph-protocol registration into a sprite (or return a
+    /// cached one); the `bool` is `has_color`. `glyf` glyphs become a white
+    /// alpha mask tinted by the shader; `colrv0` glyphs become an RGBA
+    /// sprite. Returns `Ok(None)` for payloads that fail to decode so the
+    /// caller can fall back.
+    pub fn cached_glyph_protocol(
+        &mut self,
+        cp: u32,
+        version: u32,
+        glyph: &wezterm_glyph_protocol::RegisteredGlyph,
+        cell_fg: [u8; 4],
+        metrics: &RenderMetrics,
+    ) -> anyhow::Result<Option<(Sprite, bool)>> {
+        use wezterm_glyph_protocol::RegisteredGlyph;
+        // Only foreground-dependent glyphs (color glyphs referencing the
+        // 0xFFFF sentinel) key by fg and re-rasterize on fg change; all
+        // others use a constant so they cache once across fg changes.
+        let fg_key = if glyph.uses_foreground() {
+            cell_fg
+        } else {
+            [0, 0, 0, 0]
+        };
+        let key = (cp, version, metrics.into(), fg_key);
+        if let Some(entry) = self.glyph_protocol_glyphs.get(&key) {
+            return Ok(Some(entry.clone()));
+        }
+        let cell_w = metrics.cell_size.width as usize;
+        let cell_h = metrics.cell_size.height as usize;
+        // Text baseline in pixels from the cell top. `descender` is the
+        // (negative) distance from baseline to the cell bottom, so the
+        // baseline sits at cell_h + descender. Used by `align=baseline`.
+        let baseline = (cell_h as f32 + metrics.descender.get() as f32).clamp(0.0, cell_h as f32);
+
+        let (image, has_color) = match glyph {
+            RegisteredGlyph::Glyf { .. } => {
+                let Some(bmp) = glyph.rasterize_alpha(cell_w, cell_h, baseline) else {
+                    return Ok(None);
+                };
+                // White mask with coverage in alpha; the shader tints it
+                // with the cell foreground color.
+                let mut rgba = Vec::with_capacity(bmp.data.len() * 4);
+                for a in &bmp.data {
+                    rgba.extend_from_slice(&[0xff, 0xff, 0xff, *a]);
+                }
+                (
+                    Image::with_rgba32(bmp.width, bmp.height, bmp.width * 4, &rgba),
+                    false,
+                )
+            }
+            RegisteredGlyph::Color { .. } => {
+                // Resolve the 0xFFFF foreground sentinel to the real cell fg.
+                // Non-sentinel color glyphs ignore it (all colors from CPAL)
+                // and are keyed by a constant fg, so they still cache once.
+                let Some(bmp) = glyph.rasterize_color(cell_w, cell_h, baseline, cell_fg) else {
+                    return Ok(None);
+                };
+                (
+                    Image::with_rgba32(bmp.width, bmp.height, bmp.width * 4, &bmp.data),
+                    true,
+                )
+            }
+        };
+        let sprite = self.atlas.allocate(&image)?;
+        self.glyph_protocol_glyphs
+            .insert(key, (sprite.clone(), has_color));
+        Ok(Some((sprite, has_color)))
     }
 
     pub fn cached_block(

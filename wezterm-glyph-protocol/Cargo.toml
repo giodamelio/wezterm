@@ -1,0 +1,14 @@
+[package]
+authors = ["Wez Furlong"]
+name = "wezterm-glyph-protocol"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/wezterm/wezterm"
+description = "Glyph Protocol: runtime registration of custom vector glyphs (https://rapha.land/introducing-glyph-protocol-for-terminals/)"
+license = "MIT"
+
+[dependencies]
+ttf-parser = "0.25"
+read-fonts = "0.40"
+tiny-skia = "0.11"
+base64 = { workspace = true, default-features = false, features = ["alloc"] }

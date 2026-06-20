@@ -11,6 +11,7 @@ members = [
   "wezterm-escape-parser",
   "wezterm-dynamic",
   "wezterm-gui",
+  "wezterm-glyph-protocol",
   "wezterm-mux-server",
   "wezterm-open-url",
   "wezterm-ssh",
@@ -250,6 +251,7 @@ wezterm-dynamic = { version = "0.2.1", path = "wezterm-dynamic", default-feature
 wezterm-dynamic-derive = { version="0.1.1", path="wezterm-dynamic/derive" }
 wezterm-escape-parser = { version="0.1.0", path="wezterm-escape-parser" }
 wezterm-font = { path = "wezterm-font" }
+wezterm-glyph-protocol = { path = "wezterm-glyph-protocol" }
 wezterm-gui-subcommands = { path = "wezterm-gui-subcommands" }
 wezterm-input-types = { version="0.1", path = "wezterm-input-types", default-features=false }
 wezterm-mux-server-impl = { path = "wezterm-mux-server-impl" }

@@ -59,6 +59,11 @@ pub enum Action {
     /// wants information
     XtGetTcap(Vec<String>),
     KittyImage(Box<KittyImage>),
+    /// A Glyph Protocol APC command. Holds the raw APC body (identifier
+    /// `25a1` onward); the terminal model parses and dispatches it. Kept
+    /// as raw bytes here so this low-level crate needn't depend on the
+    /// glyph decoder.
+    GlyphProtocol(Vec<u8>),
 }
 
 impl Action {
@@ -124,6 +129,11 @@ impl Display for Action {
                 Ok(())
             }
             Action::KittyImage(img) => img.fmt(f),
+            Action::GlyphProtocol(data) => {
+                write!(f, "\x1b_")?;
+                f.write_str(&String::from_utf8_lossy(data))?;
+                write!(f, "\x1b\\")
+            }
         }
     }
 }

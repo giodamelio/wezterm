@@ -167,6 +167,13 @@ impl LogicalLine {
 pub trait Pane: Downcast + Send + Sync {
     fn pane_id(&self) -> PaneId;
 
+    /// The per-session glyph-protocol glossary for this pane, if it has
+    /// one. Local panes return their terminal's glossary; remote/other
+    /// panes default to `None` (glyph protocol is local-only for now).
+    fn glyph_glossary(&self) -> Option<wezterm_glyph_protocol::SharedGlossary> {
+        None
+    }
+
     /// Returns the 0-based cursor position relative to the top left of
     /// the visible screen
     fn get_cursor_position(&self) -> StableCursorPosition;

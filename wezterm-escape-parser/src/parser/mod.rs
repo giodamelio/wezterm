@@ -225,6 +225,9 @@ impl<'a, F: FnMut(Action)> VTActor for Performer<'a, F> {
     fn apc_dispatch(&mut self, data: Vec<u8>) {
         if let Some(img) = super::KittyImage::parse_apc(&data) {
             (self.callback)(Action::KittyImage(Box::new(img)))
+        } else if data.starts_with(b"25a1") {
+            // Glyph Protocol: surface the raw body; the terminal parses it.
+            (self.callback)(Action::GlyphProtocol(data))
         } else {
             log::trace!("Ignoring APC data: {:?}", String::from_utf8_lossy(&data));
         }

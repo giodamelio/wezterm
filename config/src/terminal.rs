@@ -78,6 +78,10 @@ impl wezterm_term::TerminalConfiguration for TermConfig {
         self.configuration().enable_kitty_graphics
     }
 
+    fn enable_glyph_protocol(&self) -> bool {
+        self.configuration().enable_glyph_protocol
+    }
+
     fn enable_title_reporting(&self) -> bool {
         self.configuration().enable_title_reporting
     }

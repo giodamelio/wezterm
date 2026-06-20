@@ -161,6 +161,30 @@ impl<'a> Performer<'a> {
                 }
             }
 
+            // Glyph Protocol: a registered codepoint's declared `width`
+            // (1 or 2) is authoritative for layout — cursor advance,
+            // wrapping, selection geometry — overriding its UAX#11 width
+            // (spec §6.1). Only PUA codepoints can be registered, so the
+            // cheap range check avoids locking the glossary for ordinary
+            // text. `set_cell_grapheme` below fills the continuation cell
+            // from `print_width`.
+            if self.config.enable_glyph_protocol() {
+                let mut chars = g.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    if wezterm_glyph_protocol::parse::is_pua(c as u32) {
+                        if let Some(w) = self
+                            .glyph_glossary
+                            .lock()
+                            .unwrap()
+                            .get(c as u32)
+                            .map(|gl| gl.sizing().width)
+                        {
+                            print_width = w as usize;
+                        }
+                    }
+                }
+            }
+
             if self.wrap_next {
                 // Since we're implicitly moving the cursor to the next
                 // line, we need to tag the current position as wrapped
@@ -283,6 +307,10 @@ impl<'a> Performer<'a> {
                 if let Err(err) = self.kitty_img(*img) {
                     log::error!("kitty_img: {:#}", err);
                 }
+            }
+            Action::GlyphProtocol(data) => {
+                self.flush_print();
+                self.glyph_protocol(data);
             }
         }
     }
@@ -724,6 +752,9 @@ impl<'a> Performer<'a> {
                 self.erase_in_display(EraseInDisplay::EraseScrollback);
                 self.erase_in_display(EraseInDisplay::EraseDisplay);
                 self.palette_did_change();
+                // RIS clears the glyph-protocol glossary (spec §6.4 MAY; we
+                // do). Harmless when the protocol is disabled / empty.
+                self.glyph_glossary.lock().unwrap().clear_all();
             }
 
             _ => {

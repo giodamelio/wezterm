@@ -176,6 +176,13 @@ pub trait TerminalConfiguration: Downcast + std::fmt::Debug + Send + Sync {
         false
     }
 
+    /// Whether the Glyph Protocol is enabled. When false, glyph-protocol
+    /// APC messages are ignored entirely (no replies, no glossary changes)
+    /// and the renderer does not consult the glossary.
+    fn enable_glyph_protocol(&self) -> bool {
+        false
+    }
+
     fn enable_kitty_keyboard(&self) -> bool {
         false
     }

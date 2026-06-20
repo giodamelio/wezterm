@@ -3567,6 +3567,7 @@ dependencies = [
  "thiserror 1.0.69",
  "url",
  "wezterm-dynamic",
+ "wezterm-glyph-protocol",
  "wezterm-ssh",
  "wezterm-term",
  "winapi",
@@ -7311,6 +7312,7 @@ dependencies = [
  "wezterm-cell",
  "wezterm-dynamic",
  "wezterm-escape-parser",
+ "wezterm-glyph-protocol",
  "wezterm-surface",
 ]
 

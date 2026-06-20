@@ -40,11 +40,30 @@ impl Clipboard for LocalClip {
 
 struct TestTerm {
     term: Terminal,
+    /// Shared buffer capturing everything the terminal writes back to the
+    /// PTY (answerback / protocol replies), so tests can assert on replies.
+    writer: Arc<Mutex<Vec<u8>>>,
+}
+
+/// A `Write` that appends to a shared buffer, letting a test inspect the
+/// bytes the terminal writes back to the PTY.
+#[derive(Clone)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
 struct TestTermConfig {
     scrollback: usize,
+    enable_glyph_protocol: bool,
 }
 impl TerminalConfiguration for TestTermConfig {
     fn scrollback_size(&self) -> usize {
@@ -54,15 +73,32 @@ impl TerminalConfiguration for TestTermConfig {
     fn color_palette(&self) -> ColorPalette {
         ColorPalette::default()
     }
+
+    fn enable_glyph_protocol(&self) -> bool {
+        self.enable_glyph_protocol
+    }
 }
 
 impl TestTerm {
     fn new(height: usize, width: usize, scrollback: usize) -> Self {
+        // The glyph protocol is on by default for tests so the existing
+        // glyph-protocol suite exercises it; the gate itself is covered by a
+        // dedicated test that builds a disabled term.
+        Self::new_with_glyph_protocol(height, width, scrollback, true)
+    }
+
+    fn new_with_glyph_protocol(
+        height: usize,
+        width: usize,
+        scrollback: usize,
+        enable_glyph_protocol: bool,
+    ) -> Self {
         let _ = env_logger::Builder::new()
             .is_test(true)
             .filter_level(log::LevelFilter::Trace)
             .try_init();
 
+        let writer = Arc::new(Mutex::new(Vec::new()));
         let mut term = Terminal::new(
             TerminalSize {
                 rows: height,
@@ -71,15 +107,18 @@ impl TestTerm {
                 pixel_height: height * 16,
                 dpi: 0,
             },
-            Arc::new(TestTermConfig { scrollback }),
+            Arc::new(TestTermConfig {
+                scrollback,
+                enable_glyph_protocol,
+            }),
             "WezTerm",
             "O_o",
-            Box::new(Vec::new()),
+            Box::new(SharedWriter(Arc::clone(&writer))),
         );
         let clip: Arc<dyn Clipboard> = Arc::new(LocalClip::new());
         term.set_clipboard(&clip);
 
-        let mut term = Self { term };
+        let mut term = Self { term, writer };
 
         term.set_auto_wrap(true);
 
@@ -88,6 +127,40 @@ impl TestTerm {
 
     fn print<B: AsRef<[u8]>>(&mut self, bytes: B) {
         self.term.advance_bytes(bytes);
+    }
+
+    /// Drain and return everything the terminal has written back to the PTY
+    /// so far. Replies are delivered by a background `ThreadedWriter`, so
+    /// this is racy on its own — use [`Self::wait_writer_output`] when a
+    /// reply is expected and [`Self::expect_no_writer_output`] when none is.
+    fn drain_writer(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.writer.lock().unwrap())
+    }
+
+    /// Wait (bounded) for the async PTY writer to deliver a reply, then
+    /// drain and return it. Polls until the buffer is non-empty and stable.
+    fn wait_writer_output(&self) -> Vec<u8> {
+        let mut last = 0usize;
+        for _ in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let len = self.writer.lock().unwrap().len();
+            if len > 0 && len == last {
+                break;
+            }
+            last = len;
+        }
+        self.drain_writer()
+    }
+
+    /// Assert that no reply is produced within a short settling window.
+    fn expect_no_writer_output(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let out = self.drain_writer();
+        assert!(
+            out.is_empty(),
+            "expected no PTY reply, got {:?}",
+            String::from_utf8_lossy(&out)
+        );
     }
 
     fn set_mode(&mut self, mode: &str, enable: bool) {
@@ -1372,4 +1445,257 @@ fn test_hyperlinks() {
         ],
         Compare::TEXT | Compare::ATTRS,
     );
+}
+
+/// base64 of the crate's sample triangle simple-glyph record.
+const SAMPLE_TRIANGLE_B64: &str = "AAEBRQCWAqMDUgACAAABAQEBRQFe/1EAlgAAArw=";
+
+#[test]
+fn glyph_protocol_glossary_starts_empty_and_reachable() {
+    // The per-session glossary lives on TerminalState and is reachable via the
+    // public accessor the GUI renderer uses. With no registrations yet it is
+    // empty (no pre-seeding — apps must register).
+    let term = TestTerm::new(3, 10, 0);
+    assert!(term
+        .glyph_glossary()
+        .lock()
+        .unwrap()
+        .codepoints()
+        .is_empty());
+}
+
+#[test]
+fn glyph_protocol_register_via_apc() {
+    // End-to-end: feed a register APC through the escape parser + performer
+    // and confirm it lands in the glossary.
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    let g = term.glyph_glossary();
+    let g = g.lock().unwrap();
+    assert!(g.contains(0xE000), "register APC should add U+E000");
+    assert!(!g.contains(0xE001));
+}
+
+#[test]
+fn glyph_protocol_register_rejects_non_pua() {
+    // A non-PUA codepoint must not be registered (security contract §9).
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=41;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert!(term
+        .glyph_glossary()
+        .lock()
+        .unwrap()
+        .codepoints()
+        .is_empty());
+}
+
+#[test]
+fn glyph_protocol_clear_via_apc() {
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert!(term.glyph_glossary().lock().unwrap().contains(0xE000));
+    term.print("\x1b_25a1;c;cp=E000\x1b\\".to_string());
+    assert!(!term.glyph_glossary().lock().unwrap().contains(0xE000));
+}
+
+/// base64 of a two-layer colrv0 container (red + blue squares).
+const SAMPLE_COLR_B64: &str = "AAMAIgABAAAAAAPoA+gAAwAAAQEBAQAAA+gAAPwYAAAAAAPoAAAAIgABADIAMgH0A7YAAwAAAQEBAQAyAcIAAP4+ADIAAAOEAAAAIgABAfQAMgO2A7YAAwAAAQEBAQH0AcIAAP4+ADIAAAOEAAAAHAAAAAEAAAAOAAAAFAACAAAAAAACAAEAAAACAAEAFgAAAAIAAQACAAAADgAAKCj///9QKP8=";
+
+#[test]
+fn glyph_protocol_register_color_via_apc() {
+    // A colrv0 container registers as a Color glyph in the glossary.
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E001;fmt=colrv0;upm=1000;{SAMPLE_COLR_B64}\x1b\\"
+    ));
+    let g = term.glyph_glossary();
+    let g = g.lock().unwrap();
+    assert!(g.contains(0xE001), "colrv0 register should add U+E001");
+    assert!(matches!(
+        g.get(0xE001),
+        Some(wezterm_glyph_protocol::RegisteredGlyph::Color { .. })
+    ));
+}
+
+#[test]
+fn glyph_protocol_ris_clears_glossary() {
+    // RIS (ESC c) clears the glossary (spec §6.4).
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert!(term.glyph_glossary().lock().unwrap().contains(0xE000));
+    term.print("\x1bc".to_string()); // RIS
+    assert!(
+        term.glyph_glossary().lock().unwrap().is_empty(),
+        "RIS must clear the glossary"
+    );
+}
+
+#[test]
+fn glyph_protocol_overwrite_bumps_version() {
+    // Re-registering a codepoint bumps its version so the atlas drops the
+    // stale sprite (spec §7.3).
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    let v0 = term
+        .glyph_glossary()
+        .lock()
+        .unwrap()
+        .version(0xE000)
+        .unwrap();
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    let v1 = term
+        .glyph_glossary()
+        .lock()
+        .unwrap()
+        .version(0xE000)
+        .unwrap();
+    assert!(
+        v1 > v0,
+        "overwrite must bump the version ({} -> {})",
+        v0,
+        v1
+    );
+}
+
+#[test]
+fn glyph_protocol_width_override_advances_two_cells() {
+    // A width=2 registration makes its codepoint occupy two cells: the
+    // cursor advances by 2 and the second cell is a continuation of the
+    // wide grapheme (spec §6.1).
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;width=2;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    // Print the registered codepoint (U+E000).
+    term.print("\u{E000}".to_string());
+    assert_eq!(
+        term.cursor_pos().x,
+        2,
+        "width=2 glyph must advance the cursor by two cells"
+    );
+    // The grapheme lives in cell 0 and is two columns wide; the next
+    // visible cell starts at column 2 (cell 1 is its continuation).
+    let lines = term.screen().visible_lines();
+    let first = lines[0].visible_cells().next().expect("a cell at col 0");
+    assert_eq!(first.str(), "\u{E000}");
+    assert_eq!(first.width(), 2, "the wide grapheme spans two columns");
+}
+
+#[test]
+fn glyph_protocol_width_one_advances_one_cell() {
+    // A width=1 (default) registration advances a single cell, even though
+    // PUA codepoints are UAX#11 Ambiguous.
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E001;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    term.print("\u{E001}".to_string());
+    assert_eq!(term.cursor_pos().x, 1, "default width advances one cell");
+}
+
+#[test]
+fn glyph_protocol_support_reply_wire_format() {
+    // The `s` verb advertises exactly the formats this build renders.
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print("\x1b_25a1;s\x1b\\".to_string());
+    assert_eq!(
+        String::from_utf8(term.wait_writer_output()).unwrap(),
+        "\x1b_25a1;s;fmt=glyf,colrv0\x1b\\"
+    );
+}
+
+#[test]
+fn glyph_protocol_query_reply_reflects_glossary() {
+    let mut term = TestTerm::new(3, 10, 0);
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    let _ = term.wait_writer_output(); // drop the register ACK
+
+    term.print("\x1b_25a1;q;cp=E000\x1b\\".to_string());
+    assert_eq!(
+        String::from_utf8(term.wait_writer_output()).unwrap(),
+        "\x1b_25a1;q;cp=e000;status=glossary\x1b\\"
+    );
+    // An unregistered PUA codepoint reports empty coverage.
+    term.print("\x1b_25a1;q;cp=E001\x1b\\".to_string());
+    assert_eq!(
+        String::from_utf8(term.wait_writer_output()).unwrap(),
+        "\x1b_25a1;q;cp=e001;status=\x1b\\"
+    );
+}
+
+#[test]
+fn glyph_protocol_register_error_replies() {
+    let mut term = TestTerm::new(3, 10, 0);
+    // Non-PUA codepoint → out_of_namespace.
+    term.print(format!(
+        "\x1b_25a1;r;cp=41;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert_eq!(
+        String::from_utf8(term.wait_writer_output()).unwrap(),
+        "\x1b_25a1;r;cp=41;status=1;reason=out_of_namespace\x1b\\"
+    );
+    // colrv1 is not advertised → malformed_payload.
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;fmt=colrv1;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert_eq!(
+        String::from_utf8(term.wait_writer_output()).unwrap(),
+        "\x1b_25a1;r;cp=e000;status=1;reason=malformed_payload\x1b\\"
+    );
+}
+
+#[test]
+fn glyph_protocol_reply_levels_gate_output() {
+    let mut term = TestTerm::new(3, 10, 0);
+    // reply=0 → silent on success.
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;reply=0;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    term.expect_no_writer_output();
+    // reply=2 → silent on success, but emits failures.
+    term.print(format!(
+        "\x1b_25a1;r;cp=E001;reply=2;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    term.expect_no_writer_output();
+    term.print("\x1b_25a1;r;cp=41;reply=2;upm=1000;AAEB\x1b\\".to_string());
+    assert!(
+        !term.wait_writer_output().is_empty(),
+        "reply=2 must still emit failures"
+    );
+}
+
+#[test]
+fn glyph_protocol_disabled_ignores_apc() {
+    // With enable_glyph_protocol = false, register/clear/support are all
+    // no-ops: nothing lands in the glossary and `s` produces no PTY reply,
+    // so clients fall back via the spec's detection timeout (§3.3).
+    let mut term = TestTerm::new_with_glyph_protocol(3, 10, 0, false);
+    term.print("\x1b_25a1;s\x1b\\".to_string());
+    term.print(format!(
+        "\x1b_25a1;r;cp=E000;upm=1000;{SAMPLE_TRIANGLE_B64}\x1b\\"
+    ));
+    assert!(
+        term.glyph_glossary()
+            .lock()
+            .unwrap()
+            .codepoints()
+            .is_empty(),
+        "disabled protocol must not register anything"
+    );
+    // No reply of any kind should have been written back to the PTY.
+    term.expect_no_writer_output();
 }

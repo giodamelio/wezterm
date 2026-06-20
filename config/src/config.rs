@@ -249,6 +249,11 @@ pub struct Config {
 
     #[dynamic(default = "default_true")]
     pub enable_kitty_graphics: bool,
+
+    /// Enable the Glyph Protocol: runtime registration of custom vector
+    /// glyphs at Private-Use-Area codepoints over APC. Default off.
+    #[dynamic(default)]
+    pub enable_glyph_protocol: bool,
     #[dynamic(default)]
     pub enable_kitty_keyboard: bool,
 

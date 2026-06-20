@@ -718,6 +718,7 @@ pub fn parse_status_text(text: &str, default_cell: CellAttributes) -> Line {
             | Action::DeviceControl(_)
             | Action::Esc(_)
             | Action::KittyImage(_)
+            | Action::GlyphProtocol(_)
             | Action::XtGetTcap(_)
             | Action::Sixel(_) => {
                 flush_print(&mut print_buffer, &mut cells, &pen);

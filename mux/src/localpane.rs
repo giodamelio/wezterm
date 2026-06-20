@@ -141,6 +141,10 @@ impl Pane for LocalPane {
         self.pane_id
     }
 
+    fn glyph_glossary(&self) -> Option<wezterm_glyph_protocol::SharedGlossary> {
+        Some(self.terminal.lock().glyph_glossary())
+    }
+
     fn get_metadata(&self) -> Value {
         #[allow(unused_mut)]
         let mut map: BTreeMap<Value, Value> = BTreeMap::new();

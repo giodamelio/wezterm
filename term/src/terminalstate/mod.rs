@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
 use std::sync::mpsc::{channel, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use terminfo::{Database, Value};
 use termwiz::input::KeyboardEncoding;
 use url::Url;
@@ -23,8 +23,10 @@ use wezterm_escape_parser::csi::{
     XtSmGraphicsAction, XtSmGraphicsItem, XtSmGraphicsStatus, XtermKeyModifierResource,
 };
 use wezterm_escape_parser::{OneBased, OperatingSystemCommand, CSI};
+use wezterm_glyph_protocol::{Glossary, SharedGlossary};
 use wezterm_surface::{CursorShape, CursorVisibility, SequenceNo};
 
+mod glyph;
 mod image;
 mod iterm;
 mod keyboard;
@@ -361,6 +363,10 @@ pub struct TerminalState {
     user_vars: HashMap<String, String>,
 
     kitty_img: KittyImageState,
+
+    /// Glyph Protocol per-session glossary, shared with the GUI renderer so
+    /// registered PUA codepoints can be drawn as custom glyphs.
+    glyph_glossary: SharedGlossary,
     seqno: SequenceNo,
 
     /// The unicode version that is in effect
@@ -494,6 +500,14 @@ impl std::io::Write for ThreadedWriter {
 }
 
 impl TerminalState {
+    /// The per-session glyph-protocol glossary, shared with the GUI
+    /// renderer. Returns a cheap handle clone.
+    pub fn glyph_glossary(&self) -> SharedGlossary {
+        Arc::clone(&self.glyph_glossary)
+    }
+}
+
+impl TerminalState {
     /// Constructs the terminal state.
     /// You generally want the `Terminal` struct rather than this one;
     /// Terminal contains and dereferences to `TerminalState`.
@@ -569,6 +583,7 @@ impl TerminalState {
             image_cache: lru::LruCache::new(NonZeroUsize::new(16).unwrap()),
             user_vars: HashMap::new(),
             kitty_img: Default::default(),
+            glyph_glossary: Arc::new(Mutex::new(Glossary::new())),
             seqno,
             unicode_version,
             unicode_version_stack: vec![],
